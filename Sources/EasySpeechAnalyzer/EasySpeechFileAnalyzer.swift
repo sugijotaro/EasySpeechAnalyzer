@@ -18,8 +18,158 @@ public struct EasySpeechFileResult: Sendable {
     public let plainText: String
     /// 解析にかかった実時間 (秒)。
     public let elapsedSeconds: TimeInterval
+    /// 解析元メディアのおおよその長さ (秒)。取得できない場合は `nil`。
+    public let sourceDuration: TimeInterval?
+    /// 認識に使ったロケール。
+    public let locale: Locale
     /// `SpeechAnalyzer` が選択した解析フォーマット。デバッグ時の状況確認用に保持する。
     public let analyzerFormat: AVAudioFormat
+}
+
+@available(iOS 26.0, *)
+public extension EasySpeechFileResult {
+    /// ファイル解析結果を `SpeechTranscript` に変換する。
+    ///
+    /// `text` に含まれる `audioTimeRange` 属性から、句読点・長さ・時間で区切ったセグメントを復元する。
+    /// 属性が取得できない場合は `sourceDuration` を使い、最後のフォールバックとして `0...0` を返す。
+    func makeSpeechTranscript(createdAt: Date = Date()) -> SpeechTranscript {
+        makeSpeechTranscript(
+            createdAt: createdAt,
+            maxCharactersPerSegment: 56,
+            maxDuration: 5.0
+        )
+    }
+
+    /// ファイル解析結果から字幕セグメントを生成する。
+    func makeSubtitleSegments(
+        options: SubtitleSegmentationOptions = .shortVideoDefault
+    ) -> [SubtitleSegment] {
+        let maxCharacters = max(1, options.maxCharactersPerLine * options.maxLines)
+        return makeSpeechTranscript(
+            maxCharactersPerSegment: maxCharacters,
+            maxDuration: options.maxDuration
+        )
+        .makeSubtitleSegments(options: options)
+    }
+
+    private func makeSpeechTranscript(
+        createdAt: Date = Date(),
+        maxCharactersPerSegment: Int,
+        maxDuration: TimeInterval
+    ) -> SpeechTranscript {
+        let segments = makeSegmentsFromAudioTimeRanges(
+            maxCharactersPerSegment: maxCharactersPerSegment,
+            maxDuration: maxDuration
+        )
+
+        if !segments.isEmpty {
+            return SpeechTranscript(
+                text: plainText,
+                segments: segments,
+                locale: locale,
+                duration: sourceDuration,
+                createdAt: createdAt
+            )
+        }
+
+        let segment = SpeechSegment(
+            text: plainText,
+            startTime: attributedAudioTimeRange?.start ?? 0,
+            endTime: attributedAudioTimeRange?.end ?? sourceDuration ?? 0,
+            confidence: nil,
+            isFinal: true
+        )
+
+        return SpeechTranscript(
+            text: plainText,
+            segments: plainText.isEmpty ? [] : [segment],
+            locale: locale,
+            duration: sourceDuration,
+            createdAt: createdAt
+        )
+    }
+
+    private var attributedAudioTimeRange: (start: TimeInterval, end: TimeInterval)? {
+        var earliestStart: TimeInterval?
+        var latestEnd: TimeInterval?
+
+        for run in text.runs {
+            guard let range = run.audioTimeRange else { continue }
+            let start = range.start.seconds
+            let end = range.end.seconds
+            guard start.isFinite, end.isFinite else { continue }
+
+            if earliestStart == nil || start < earliestStart! {
+                earliestStart = start
+            }
+            if latestEnd == nil || end > latestEnd! {
+                latestEnd = end
+            }
+        }
+
+        guard let earliestStart, let latestEnd else { return nil }
+        return (earliestStart, latestEnd)
+    }
+
+    private func makeSegmentsFromAudioTimeRanges(
+        maxCharactersPerSegment: Int,
+        maxDuration: TimeInterval
+    ) -> [SpeechSegment] {
+        var segments: [SpeechSegment] = []
+        var currentText = ""
+        var currentStart: TimeInterval?
+        var currentEnd: TimeInterval?
+
+        func flushCurrentSegment() {
+            let trimmed = currentText.trimmingCharacters(in: .whitespacesAndNewlines)
+            defer {
+                currentText = ""
+                currentStart = nil
+                currentEnd = nil
+            }
+
+            guard !trimmed.isEmpty, let currentStart, let currentEnd else { return }
+            segments.append(SpeechSegment(
+                text: trimmed,
+                startTime: currentStart,
+                endTime: max(currentEnd, currentStart),
+                confidence: nil,
+                isFinal: true
+            ))
+        }
+
+        for run in text.runs {
+            guard let range = run.audioTimeRange else { continue }
+            let start = range.start.seconds
+            let end = range.end.seconds
+            guard start.isFinite, end.isFinite else { continue }
+
+            let piece = String(text[run.range].characters)
+            guard !piece.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
+
+            if currentStart == nil {
+                currentStart = start
+            }
+            currentEnd = end
+            currentText += piece
+
+            let duration = (currentEnd ?? start) - (currentStart ?? start)
+            let shouldFlush = currentText.count >= maxCharactersPerSegment
+                || duration >= maxDuration
+                || piece.contains(where: isSubtitleBoundary)
+
+            if shouldFlush {
+                flushCurrentSegment()
+            }
+        }
+
+        flushCurrentSegment()
+        return segments
+    }
+
+    private func isSubtitleBoundary(_ character: Character) -> Bool {
+        ["。", "、", ".", ",", "!", "?", "！", "？"].contains(character)
+    }
 }
 
 // MARK: - Error
@@ -114,6 +264,7 @@ public final class EasySpeechFileAnalyzer: Sendable {
             throw EasySpeechFileAnalyzerError.fileUnreadable(url, underlying: error)
         }
         log("audio: format=\(audioFile.processingFormat), frames=\(audioFile.length)")
+        let sourceDuration = Double(audioFile.length) / audioFile.processingFormat.sampleRate
 
         let context = try await prepareSession()
         log("audio: analyzer started (format=\(context.analyzerFormat))")
@@ -136,6 +287,8 @@ public final class EasySpeechFileAnalyzer: Sendable {
             text: text,
             plainText: String(text.characters),
             elapsedSeconds: elapsed,
+            sourceDuration: sourceDuration.isFinite ? sourceDuration : nil,
+            locale: locale,
             analyzerFormat: context.analyzerFormat
         )
     }
@@ -199,6 +352,8 @@ public final class EasySpeechFileAnalyzer: Sendable {
             text: text,
             plainText: String(text.characters),
             elapsedSeconds: elapsed,
+            sourceDuration: totalDuration.isFinite ? totalDuration : nil,
+            locale: locale,
             analyzerFormat: context.analyzerFormat
         )
     }
