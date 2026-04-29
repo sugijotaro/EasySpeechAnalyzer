@@ -367,29 +367,30 @@ public final class EasySpeechFileAnalyzer: Sendable {
     private func prepareSession() async throws -> SessionContext {
         let transcriber = SpeechTranscriber(
             locale: locale,
-            transcriptionOptions: [],
-            // ファイル解析では確定結果のみ欲しいので volatile は無効化。
-            reportingOptions: [],
-            attributeOptions: [.audioTimeRange]
+            preset: SpeechTranscriber.Preset(
+                transcriptionOptions: [],
+                // ファイル解析では確定結果のみ欲しいので volatile は無効化。
+                reportingOptions: [],
+                attributeOptions: [.audioTimeRange]
+            )
         )
         let analyzer = SpeechAnalyzer(modules: [transcriber])
 
-        // ロケールサポート確認
-        let supportedLocales = await SpeechTranscriber.supportedLocales
-        let isSupported = supportedLocales
-            .map { $0.identifier(.bcp47) }
-            .contains(locale.identifier(.bcp47))
-        guard isSupported else {
+        let assetStatus = await AssetInventory.status(forModules: [transcriber])
+        log("asset: status for \(locale.identifier(.bcp47)) is \(assetStatus)")
+
+        guard assetStatus != .unsupported else {
             throw EasySpeechFileAnalyzerError.localeNotSupported(locale)
         }
 
-        // モデル未インストールならダウンロード
-        let installedLocales = await Set(SpeechTranscriber.installedLocales.map { $0.identifier(.bcp47) })
-        if !installedLocales.contains(locale.identifier(.bcp47)) {
-            log("downloading model for \(locale.identifier(.bcp47))...")
+        if assetStatus != .installed {
+            log("asset: downloading model for \(locale.identifier(.bcp47))...")
             do {
                 if let downloader = try await AssetInventory.assetInstallationRequest(supporting: [transcriber]) {
                     try await downloader.downloadAndInstall()
+                    log("asset: download finished for \(locale.identifier(.bcp47))")
+                } else {
+                    log("asset: installation request returned nil for \(locale.identifier(.bcp47))")
                 }
             } catch {
                 throw EasySpeechFileAnalyzerError.modelDownloadFailed(underlying: error)
