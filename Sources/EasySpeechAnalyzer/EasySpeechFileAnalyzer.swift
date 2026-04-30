@@ -45,11 +45,24 @@ public extension EasySpeechFileResult {
         options: SubtitleSegmentationOptions = .shortVideoDefault
     ) -> [SubtitleSegment] {
         let maxCharacters = max(1, options.maxCharactersPerLine * options.maxLines)
-        return makeSpeechTranscript(
+        debugLog(
+            "makeSubtitleSegments: plainTextCount=\(plainText.count), sourceDuration=\(debugTime(sourceDuration)), maxCharacters=\(maxCharacters), maxDuration=\(debugTime(options.maxDuration)), minDuration=\(debugTime(options.minDuration)), splitByPunctuation=\(options.splitByPunctuation), plainText=\"\(debugText(plainText))\""
+        )
+        let transcript = makeSpeechTranscript(
             maxCharactersPerSegment: maxCharacters,
             maxDuration: options.maxDuration
         )
-        .makeSubtitleSegments(options: options)
+        debugLog(
+            "makeSubtitleSegments: transcriptSegmentCount=\(transcript.segments.count), finalizedCount=\(transcript.finalizedSegments.count)"
+        )
+        let subtitleSegments = transcript.makeSubtitleSegments(options: options)
+        debugLog("makeSubtitleSegments: outputSubtitleSegmentCount=\(subtitleSegments.count)")
+        for (index, segment) in subtitleSegments.enumerated() {
+            debugLog(
+                "subtitleSegment[\(index)]: start=\(debugTime(segment.startTime)), end=\(debugTime(segment.endTime)), duration=\(debugTime(segment.duration)), textCount=\(segment.text.count), text=\"\(debugText(segment.text))\""
+            )
+        }
+        return subtitleSegments
     }
 
     private func makeSpeechTranscript(
@@ -57,12 +70,21 @@ public extension EasySpeechFileResult {
         maxCharactersPerSegment: Int,
         maxDuration: TimeInterval
     ) -> SpeechTranscript {
+        debugLog(
+            "makeSpeechTranscript: maxCharactersPerSegment=\(maxCharactersPerSegment), maxDuration=\(debugTime(maxDuration))"
+        )
         let segments = makeSegmentsFromAudioTimeRanges(
             maxCharactersPerSegment: maxCharactersPerSegment,
             maxDuration: maxDuration
         )
 
         if !segments.isEmpty {
+            debugLog("makeSpeechTranscript: using audioTimeRange segments count=\(segments.count)")
+            for (index, segment) in segments.enumerated() {
+                debugLog(
+                    "speechSegment[\(index)]: start=\(debugTime(segment.startTime)), end=\(debugTime(segment.endTime)), duration=\(debugTime(segment.duration)), textCount=\(segment.text.count), text=\"\(debugText(segment.text))\""
+                )
+            }
             return SpeechTranscript(
                 text: plainText,
                 segments: segments,
@@ -72,12 +94,16 @@ public extension EasySpeechFileResult {
             )
         }
 
+        debugLog("makeSpeechTranscript: no audioTimeRange segments; using fallback single segment if plainText is not empty")
         let segment = SpeechSegment(
             text: plainText,
             startTime: attributedAudioTimeRange?.start ?? 0,
             endTime: attributedAudioTimeRange?.end ?? sourceDuration ?? 0,
             confidence: nil,
             isFinal: true
+        )
+        debugLog(
+            "fallbackSpeechSegment: start=\(debugTime(segment.startTime)), end=\(debugTime(segment.endTime)), duration=\(debugTime(segment.duration)), textCount=\(segment.text.count), text=\"\(debugText(segment.text))\""
         )
 
         return SpeechTranscript(
@@ -115,12 +141,34 @@ public extension EasySpeechFileResult {
         maxCharactersPerSegment: Int,
         maxDuration: TimeInterval
     ) -> [SpeechSegment] {
+        debugLog(
+            "makeSegmentsFromAudioTimeRanges: runCount=\(text.runs.count), maxCharactersPerSegment=\(maxCharactersPerSegment), maxDuration=\(debugTime(maxDuration))"
+        )
         var segments: [SpeechSegment] = []
         var currentText = ""
         var currentStart: TimeInterval?
         var currentEnd: TimeInterval?
 
-        func flushCurrentSegment() {
+        func appendSpeechSegment(text: String, startTime: TimeInterval, endTime: TimeInterval, reason: String) {
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else {
+                debugLog("append speech segment: skipped empty text; reason=\(reason), raw=\"\(debugText(text))\"")
+                return
+            }
+            let segment = SpeechSegment(
+                text: trimmed,
+                startTime: startTime,
+                endTime: max(endTime, startTime),
+                confidence: nil,
+                isFinal: true
+            )
+            debugLog(
+                "append speech segment: reason=\(reason), start=\(debugTime(segment.startTime)), end=\(debugTime(segment.endTime)), duration=\(debugTime(segment.duration)), textCount=\(segment.text.count), text=\"\(debugText(segment.text))\""
+            )
+            segments.append(segment)
+        }
+
+        func flushCurrentSegment(reason: String) {
             let trimmed = currentText.trimmingCharacters(in: .whitespacesAndNewlines)
             defer {
                 currentText = ""
@@ -128,47 +176,399 @@ public extension EasySpeechFileResult {
                 currentEnd = nil
             }
 
-            guard !trimmed.isEmpty, let currentStart, let currentEnd else { return }
-            segments.append(SpeechSegment(
-                text: trimmed,
-                startTime: currentStart,
-                endTime: max(currentEnd, currentStart),
-                confidence: nil,
-                isFinal: true
-            ))
+            guard !trimmed.isEmpty else {
+                debugLog("flush speech segment: skipped because trimmed text is empty; raw=\"\(debugText(currentText))\"")
+                return
+            }
+            guard let currentStart, let currentEnd else {
+                debugLog("flush speech segment: skipped because start or end is missing; text=\"\(debugText(trimmed))\"")
+                return
+            }
+            appendSpeechSegment(text: trimmed, startTime: currentStart, endTime: currentEnd, reason: reason)
         }
 
-        for run in text.runs {
-            guard let range = run.audioTimeRange else { continue }
+        func flushCurrentSegment(atCharacterOffset offset: Int, reason: String) {
+            guard let segmentStart = currentStart, let segmentEnd = currentEnd else {
+                flushCurrentSegment(reason: "\(reason); missing start/end")
+                return
+            }
+
+            let characterCount = currentText.count
+            guard offset > 0, offset < characterCount else {
+                flushCurrentSegment(reason: "\(reason); offset \(offset) flushes all")
+                return
+            }
+
+            let splitIndex = currentText.index(currentText.startIndex, offsetBy: offset)
+            let prefix = String(currentText[..<splitIndex])
+            let suffix = String(currentText[splitIndex...])
+            let fraction = Double(offset) / Double(max(characterCount, 1))
+            let splitTime = segmentStart + max(0, segmentEnd - segmentStart) * fraction
+
+            debugLog(
+                "safe lookback split: reason=\(reason), offset=\(offset)/\(characterCount), splitTime=\(debugTime(splitTime)), prefix=\"\(debugText(prefix))\", suffix=\"\(debugText(suffix))\""
+            )
+            appendSpeechSegment(text: prefix, startTime: segmentStart, endTime: splitTime, reason: reason)
+
+            currentText = suffix
+            currentStart = splitTime
+            currentEnd = segmentEnd
+        }
+
+        for (index, run) in text.runs.enumerated() {
+            let piece = String(text[run.range].characters)
+            guard let range = run.audioTimeRange else {
+                debugLog("audioRun[\(index)]: skipped because audioTimeRange is missing; text=\"\(debugText(piece))\"")
+                continue
+            }
             let start = range.start.seconds
             let end = range.end.seconds
-            guard start.isFinite, end.isFinite else { continue }
+            guard start.isFinite, end.isFinite else {
+                debugLog(
+                    "audioRun[\(index)]: skipped because time is not finite; start=\(debugTime(start)), end=\(debugTime(end)), text=\"\(debugText(piece))\""
+                )
+                continue
+            }
 
-            let piece = String(text[run.range].characters)
-            guard !piece.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
+            guard !piece.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                debugLog(
+                    "audioRun[\(index)]: skipped because text is empty after trimming; start=\(debugTime(start)), end=\(debugTime(end)), text=\"\(debugText(piece))\""
+                )
+                continue
+            }
 
             if currentStart == nil {
                 currentStart = start
+                debugLog("audioRun[\(index)]: starting new speech segment at \(debugTime(start))")
             }
             currentEnd = end
             currentText += piece
 
             let duration = (currentEnd ?? start) - (currentStart ?? start)
-            let shouldFlush = currentText.count >= maxCharactersPerSegment
-                || duration >= maxDuration
-                || piece.contains(where: isSubtitleBoundary)
+            var flushReasons: [String] = []
+            if currentText.count >= maxCharactersPerSegment {
+                flushReasons.append("currentText.count \(currentText.count) >= maxCharactersPerSegment \(maxCharactersPerSegment)")
+            }
+            if duration >= maxDuration {
+                flushReasons.append("duration \(debugTime(duration)) >= maxDuration \(debugTime(maxDuration))")
+            }
+            if piece.contains(where: isSubtitleBoundary) {
+                flushReasons.append("piece contains subtitle boundary")
+            }
+            let shouldFlush = !flushReasons.isEmpty
+            debugLog(
+                "audioRun[\(index)]: append piece start=\(debugTime(start)), end=\(debugTime(end)), currentStart=\(debugTime(currentStart)), currentEnd=\(debugTime(currentEnd)), currentTextCount=\(currentText.count), duration=\(debugTime(duration)), shouldFlush=\(shouldFlush), reasons=\(flushReasons.joined(separator: "; ")), piece=\"\(debugText(piece))\""
+            )
 
-            if shouldFlush {
-                flushCurrentSegment()
+            guard shouldFlush else { continue }
+
+            if let punctuationOffset = lastSubtitleBoundaryOffset(in: currentText) {
+                if punctuationOffset < currentText.count {
+                    flushCurrentSegment(
+                        atCharacterOffset: punctuationOffset,
+                        reason: "subtitle boundary lookback"
+                    )
+                } else {
+                    flushCurrentSegment(reason: "subtitle boundary at end")
+                }
+                continue
+            }
+
+            let targetOffset = targetSplitOffset(
+                textCount: currentText.count,
+                duration: duration,
+                maxCharacters: maxCharactersPerSegment,
+                maxDuration: maxDuration
+            )
+
+            if let safeOffset = safeLookbackSplitOffset(in: currentText, targetOffset: targetOffset) {
+                flushCurrentSegment(
+                    atCharacterOffset: safeOffset,
+                    reason: "limit reached; safe lookback; \(flushReasons.joined(separator: "; "))"
+                )
+            } else if shouldForceHardSplit(
+                textCount: currentText.count,
+                duration: duration,
+                maxCharacters: maxCharactersPerSegment,
+                maxDuration: maxDuration
+            ) {
+                let hardOffset = fallbackSplitOffset(in: currentText, targetOffset: targetOffset)
+                flushCurrentSegment(
+                    atCharacterOffset: hardOffset,
+                    reason: "limit exceeded; fallback split; \(flushReasons.joined(separator: "; "))"
+                )
+            } else {
+                debugLog(
+                    "defer speech segment flush: no safe boundary before targetOffset=\(targetOffset); reasons=\(flushReasons.joined(separator: "; ")), currentText=\"\(debugText(currentText))\""
+                )
             }
         }
 
-        flushCurrentSegment()
+        flushCurrentSegment(reason: "end of audio runs")
+        debugLog("makeSegmentsFromAudioTimeRanges: resultCount=\(segments.count)")
         return segments
     }
 
     private func isSubtitleBoundary(_ character: Character) -> Bool {
         ["。", "、", ".", ",", "!", "?", "！", "？"].contains(character)
+    }
+
+    private func lastSubtitleBoundaryOffset(in text: String) -> Int? {
+        let characters = Array(text)
+        for index in characters.indices.reversed() where isSubtitleBoundary(characters[index]) {
+            return index + 1
+        }
+        return nil
+    }
+
+    private func targetSplitOffset(
+        textCount: Int,
+        duration: TimeInterval,
+        maxCharacters: Int,
+        maxDuration: TimeInterval
+    ) -> Int {
+        let characterTarget = max(1, min(textCount - 1, maxCharacters))
+        guard duration > maxDuration, duration > 0 else {
+            return characterTarget
+        }
+        let durationTarget = Int((Double(textCount) * maxDuration / duration).rounded(.down))
+        return max(1, min(characterTarget, durationTarget, textCount - 1))
+    }
+
+    private func shouldForceHardSplit(
+        textCount: Int,
+        duration: TimeInterval,
+        maxCharacters: Int,
+        maxDuration: TimeInterval
+    ) -> Bool {
+        textCount >= maxCharacters * 2 || duration >= maxDuration + 1.2
+    }
+
+    private func safeLookbackSplitOffset(in text: String, targetOffset: Int) -> Int? {
+        splitOffset(in: text, targetOffset: targetOffset, requiresSafeBoundary: true)
+    }
+
+    private func fallbackSplitOffset(in text: String, targetOffset: Int) -> Int {
+        splitOffset(in: text, targetOffset: targetOffset, requiresSafeBoundary: false)
+            ?? max(1, min(targetOffset, text.count - 1))
+    }
+
+    private func splitOffset(
+        in text: String,
+        targetOffset: Int,
+        requiresSafeBoundary: Bool
+    ) -> Int? {
+        let characters = Array(text)
+        guard characters.count > 1 else { return nil }
+
+        let upperBound = max(1, min(targetOffset, characters.count - 1))
+        var bestOffset: Int?
+        var bestScore = Int.min
+
+        for offset in 1...upperBound {
+            let score = boundaryScore(characters: characters, offset: offset)
+            if requiresSafeBoundary, score <= 0 {
+                continue
+            }
+            if !requiresSafeBoundary, score < 0 {
+                continue
+            }
+
+            let distance = abs(upperBound - offset)
+            let candidateScore = score * 1_000 - distance
+            if candidateScore > bestScore {
+                bestScore = candidateScore
+                bestOffset = offset
+            }
+        }
+
+        return bestOffset
+    }
+
+    private func boundaryScore(characters: [Character], offset: Int) -> Int {
+        guard offset > 0, offset < characters.count else { return -1 }
+        let previous = characters[offset - 1]
+        let next = characters[offset]
+
+        if isProhibitedLineStarter(next) || isProhibitedLineEnder(previous) {
+            return -1
+        }
+        if isInsideProtectedChunk(characters: characters, offset: offset) {
+            return -1
+        }
+        if isProtectedChunkStart(characters: characters, offset: offset) {
+            return 85
+        }
+        if isProtectedConnectorEnd(characters: characters, offset: offset) {
+            return 75
+        }
+        if isSameWordContinuation(previous: previous, next: next) {
+            return -1
+        }
+        if isSubtitleBoundary(previous) {
+            return 100
+        }
+        if previous.isWhitespace || next.isWhitespace {
+            return 90
+        }
+        if isParticleBoundary(characters: characters, offset: offset) {
+            return 70
+        }
+        if isScriptTransitionBoundary(previous: previous, next: next) {
+            return 35
+        }
+        return 0
+    }
+
+    private func isParticleBoundary(characters: [Character], offset: Int) -> Bool {
+        let prefix = String(characters[..<offset])
+        let particles = ["から", "まで", "より", "けど", "ので", "のに", "って", "は", "が", "を", "に", "へ", "と", "で", "も", "や", "か", "ね", "よ"]
+        return particles.contains { prefix.hasSuffix($0) }
+    }
+
+    private func isInsideProtectedChunk(characters: [Character], offset: Int) -> Bool {
+        protectedChunks.contains { chunk in
+            chunkRanges(characters: characters, matching: chunk).contains { range in
+                range.lowerBound < offset && offset < range.upperBound
+            }
+        }
+    }
+
+    private func isProtectedChunkStart(characters: [Character], offset: Int) -> Bool {
+        let suffix = String(characters[offset...])
+        return protectedChunks.contains { suffix.hasPrefix($0) }
+    }
+
+    private func isProtectedConnectorEnd(characters: [Character], offset: Int) -> Bool {
+        let prefix = String(characters[..<offset])
+        return protectedConnectors.contains { prefix.hasSuffix($0) }
+    }
+
+    private func chunkRanges(characters: [Character], matching chunk: String) -> [Range<Int>] {
+        let chunkCharacters = Array(chunk)
+        guard !chunkCharacters.isEmpty, chunkCharacters.count <= characters.count else { return [] }
+
+        var ranges: [Range<Int>] = []
+        let lastStart = characters.count - chunkCharacters.count
+        for start in 0...lastStart {
+            let end = start + chunkCharacters.count
+            if Array(characters[start..<end]) == chunkCharacters {
+                ranges.append(start..<end)
+            }
+        }
+        return ranges
+    }
+
+    private var protectedChunks: [String] {
+        protectedConnectors + protectedFormalNouns
+    }
+
+    private var protectedConnectors: [String] {
+        ["ながら", "けれど", "けど", "たり", "たら", "なら", "ので", "のに"]
+    }
+
+    private var protectedFormalNouns: [String] {
+        ["ところ", "わけ", "こと", "もの", "ため", "とき"]
+    }
+
+    private func isScriptTransitionBoundary(previous: Character, next: Character) -> Bool {
+        if isKatakana(previous), !isKatakana(next), !isProlongedSoundMark(next) {
+            return true
+        }
+        if isLatin(previous), !isLatin(next) {
+            return true
+        }
+        if !isLatin(previous), isLatin(next) {
+            return true
+        }
+        if previous.isNumber != next.isNumber {
+            return true
+        }
+        return false
+    }
+
+    private func isSameWordContinuation(previous: Character, next: Character) -> Bool {
+        if isKatakana(previous), isKatakana(next) || isProlongedSoundMark(next) {
+            return true
+        }
+        if isProlongedSoundMark(previous), isKatakana(next) {
+            return true
+        }
+        if isKanji(previous), isKanji(next) || isHiragana(next) {
+            return true
+        }
+        if isHiragana(previous), isHiragana(next), !isParticle(previous) {
+            return true
+        }
+        if isLatin(previous), isLatin(next) {
+            return true
+        }
+        return false
+    }
+
+    private func isProhibitedLineStarter(_ character: Character) -> Bool {
+        isSmallKana(character)
+            || isProlongedSoundMark(character)
+            || ["、", "。", "，", "．", ",", ".", "!", "?", "！", "？", ")", "]", "」", "』"].contains(character)
+    }
+
+    private func isProhibitedLineEnder(_ character: Character) -> Bool {
+        ["(", "[", "「", "『"].contains(character)
+    }
+
+    private func isParticle(_ character: Character) -> Bool {
+        ["は", "が", "を", "に", "へ", "と", "で", "も", "や", "か", "ね", "よ", "の"].contains(character)
+    }
+
+    private func isSmallKana(_ character: Character) -> Bool {
+        ["ぁ", "ぃ", "ぅ", "ぇ", "ぉ", "っ", "ゃ", "ゅ", "ょ", "ゎ", "ァ", "ィ", "ゥ", "ェ", "ォ", "ッ", "ャ", "ュ", "ョ", "ヮ"].contains(character)
+    }
+
+    private func isProlongedSoundMark(_ character: Character) -> Bool {
+        character == "ー"
+    }
+
+    private func isHiragana(_ character: Character) -> Bool {
+        character.unicodeScalars.allSatisfy { (0x3040...0x309F).contains($0.value) }
+    }
+
+    private func isKatakana(_ character: Character) -> Bool {
+        character.unicodeScalars.allSatisfy { (0x30A0...0x30FF).contains($0.value) }
+    }
+
+    private func isKanji(_ character: Character) -> Bool {
+        character.unicodeScalars.allSatisfy {
+            (0x3400...0x9FFF).contains($0.value) || (0xF900...0xFAFF).contains($0.value)
+        }
+    }
+
+    private func isLatin(_ character: Character) -> Bool {
+        character.unicodeScalars.allSatisfy {
+            (0x0041...0x005A).contains($0.value) || (0x0061...0x007A).contains($0.value)
+        }
+    }
+
+    private func debugLog(_ message: String) {
+        print("[SpeechSegments] \(message)")
+    }
+
+    private func debugText(_ text: String, limit: Int = 120) -> String {
+        let singleLine = text
+            .replacingOccurrences(of: "\n", with: "\\n")
+            .replacingOccurrences(of: "\r", with: "\\r")
+        guard singleLine.count > limit else { return singleLine }
+        let endIndex = singleLine.index(singleLine.startIndex, offsetBy: limit)
+        return String(singleLine[..<endIndex]) + "..."
+    }
+
+    private func debugTime(_ time: TimeInterval?) -> String {
+        guard let time else { return "nil" }
+        return debugTime(time)
+    }
+
+    private func debugTime(_ time: TimeInterval) -> String {
+        guard time.isFinite else { return "\(time)" }
+        return String(format: "%.3f", time)
     }
 }
 
