@@ -6,7 +6,7 @@ import PackageDescription
 let package = Package(
     name: "EasySpeechAnalyzer",
     platforms: [
-        .iOS("26.0")
+        .iOS("18.0")
     ],
     products: [
         .library(
