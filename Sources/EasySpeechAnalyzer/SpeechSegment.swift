@@ -135,6 +135,12 @@ public struct SpeechTranscript: Sendable, Equatable {
     public var text: String
     /// セグメント配列 (確定 + 暫定の順)。空の場合もある。
     public var segments: [SpeechSegment]
+    /// word (token) 単位の時刻付きテキスト。
+    ///
+    /// `SpeechSegment` はフレーズ単位で時刻をまとめてしまうため、
+    /// Premiere Pro Transcript JSON のような word-level timecode を要求する
+    /// 書き出し用に、Apple Speech が返した時刻をそのまま保持しておく。
+    public var words: [SpeechWord]
     /// 認識に使ったロケール。
     public var locale: Locale
     /// 録音にかかったおおよその秒数。録音していなかった場合は `nil`。
@@ -145,12 +151,14 @@ public struct SpeechTranscript: Sendable, Equatable {
     public init(
         text: String,
         segments: [SpeechSegment],
+        words: [SpeechWord] = [],
         locale: Locale,
         duration: TimeInterval? = nil,
         createdAt: Date = Date()
     ) {
         self.text = text
         self.segments = segments
+        self.words = words
         self.locale = locale
         self.duration = duration
         self.createdAt = createdAt

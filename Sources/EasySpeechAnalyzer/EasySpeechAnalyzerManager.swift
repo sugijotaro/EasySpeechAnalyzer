@@ -92,6 +92,13 @@ public final class EasySpeechAnalyzerManager {
     /// 暫定の (まだ確定していない) 直近セグメント。`finalizedSegments` の末尾に置きたいときに使う。
     public private(set) var volatileSegment: SpeechSegment?
 
+    /// 確定済み結果の word (token) 単位の時刻付きテキスト。
+    ///
+    /// Apple Speech が `audioTimeRange` を付けた run をそのまま保持するので、
+    /// Premiere Pro Transcript JSON のような word-level timecode の書き出しに使える。
+    /// 暫定結果は時刻が安定しないため含めない。
+    public private(set) var finalizedWords: [SpeechWord] = []
+
     /// 認識中の暫定テキスト (AttributedString)。互換のため残している。
     public private(set) var volatileText: AttributedString = ""
     /// 確定済みの認識テキストの累積 (AttributedString)。互換のため残している。
@@ -124,7 +131,8 @@ public final class EasySpeechAnalyzerManager {
             locale: locale,
             transcriptionOptions: [],
             reportingOptions: [.volatileResults],
-            attributeOptions: [.audioTimeRange]
+            // word 単位の時刻に加えて信頼度も受け取る (Premiere Pro Transcript JSON で必要)。
+            attributeOptions: [.audioTimeRange, .transcriptionConfidence]
         )
         self.speechTranscriber = speechTranscriber
         self.speechAnalyzer = SpeechAnalyzer(modules: [speechTranscriber])
@@ -270,6 +278,7 @@ public final class EasySpeechAnalyzerManager {
         return SpeechTranscript(
             text: transcriptText,
             segments: allSegments,
+            words: finalizedWords,
             locale: locale,
             duration: duration,
             createdAt: Date()
@@ -295,6 +304,7 @@ public final class EasySpeechAnalyzerManager {
         finalizedText = ""
         volatileText = ""
         finalizedSegments = []
+        finalizedWords = []
         volatileSegment = nil
         startedAt = nil
         endedAt = nil
@@ -307,6 +317,7 @@ public final class EasySpeechAnalyzerManager {
         finalizedText = ""
         volatileText = ""
         finalizedSegments = []
+        finalizedWords = []
         volatileSegment = nil
         if state == .completed || state.failureMessage != nil {
             startedAt = nil
@@ -345,6 +356,7 @@ private extension EasySpeechAnalyzerManager {
                         if let segment = Self.makeSegment(from: attributed, isFinal: true) {
                             self.finalizedSegments.append(segment)
                         }
+                        self.finalizedWords.append(contentsOf: attributed.speechWords())
                         self.volatileSegment = nil
                     } else {
                         self.volatileText = attributed

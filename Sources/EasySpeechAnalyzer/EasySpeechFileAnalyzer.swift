@@ -88,6 +88,7 @@ public extension EasySpeechFileResult {
             return SpeechTranscript(
                 text: plainText,
                 segments: segments,
+                words: words,
                 locale: locale,
                 duration: sourceDuration,
                 createdAt: createdAt
@@ -109,6 +110,7 @@ public extension EasySpeechFileResult {
         return SpeechTranscript(
             text: plainText,
             segments: plainText.isEmpty ? [] : [segment],
+            words: words,
             locale: locale,
             duration: sourceDuration,
             createdAt: createdAt
@@ -771,7 +773,8 @@ public final class EasySpeechFileAnalyzer: Sendable {
                 transcriptionOptions: [],
                 // ファイル解析では確定結果のみ欲しいので volatile は無効化。
                 reportingOptions: [],
-                attributeOptions: [.audioTimeRange]
+                // word 単位の時刻に加えて信頼度も受け取る (Premiere Pro Transcript JSON で必要)。
+                attributeOptions: [.audioTimeRange, .transcriptionConfidence]
             )
         )
         let analyzer = SpeechAnalyzer(modules: [transcriber])
