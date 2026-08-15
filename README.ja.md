@@ -190,7 +190,8 @@ await manager.reset()
 ### モデル型
 
 - `SpeechSegment` — `id` / `text` / `startTime` / `endTime` / `confidence?` / `isFinal` / `duration`
-- `SpeechTranscript` — `text` / `segments` / `locale` / `duration?` / `createdAt` (+ `finalizedSegments` `volatileSegments` `makeSubtitleSegments(options:)`)
+- `SpeechWord` — `text` / `startTime` / `endTime` / `confidence?` / `duration` (word 単位の時刻)
+- `SpeechTranscript` — `text` / `segments` / `words` / `locale` / `duration?` / `createdAt` (+ `finalizedSegments` `volatileSegments` `makeSubtitleSegments(options:)`)
 - `SpeechAnalyzerState` — UI 分岐用の状態 enum
 - `SpeechAnalyzerAvailability` — `available` 以外は使えない理由を示す
 - `SubtitleSegment` — 字幕 1 クリップ
@@ -243,6 +244,92 @@ print(videoResult.plainText)
 - `static let printLogger: (String) -> Void`
 - `func analyzeAudioFile(at url: URL, progress: ((Double) -> Void)? = nil) async throws -> EasySpeechFileResult`
 - `func analyzeVideoFile(at url: URL, progress: ((Double) -> Void)? = nil) async throws -> EasySpeechFileResult`
+
+## Premiere Pro 用文字起こし JSON を書き出す
+
+解析結果を Adobe Premiere Pro の **Import Static Transcript** で読み込める Transcript JSON として書き出せます。
+
+```swift
+let analyzer = EasySpeechFileAnalyzer(locale: Locale(identifier: "ja_JP"))
+
+let result = try await analyzer.analyzeVideoFile(at: videoURL)
+
+try result.writePremiereProTranscriptJSON(to: outputURL)
+```
+
+`Data` として受け取りたい場合は次の通りです。
+
+```swift
+let jsonData = try result.makePremiereProTranscriptJSON()
+try jsonData.write(to: outputURL)
+```
+
+マイク入力側 (`EasySpeechAnalyzerManager`) の結果からも書き出せます。
+
+```swift
+let transcript = await manager.stopAndMakeTranscript()
+try transcript.writePremiereProTranscriptJSON(to: outputURL)
+```
+
+### Premiere Pro での読み込み手順
+
+```text
+Text パネル
+ → Transcript タブ
+ → … (メニュー)
+ → Import
+ → Import Static Transcript
+```
+
+### 仕様と挙動
+
+- **公式フォーマット準拠**: Adobe が公開している Premiere Pro Transcript JSON 仕様
+  (`PremierePro_transcript_format_spec.json` / JSON Schema draft-07) に準拠しています。
+  ルートは `language` / `segments` / `speakers`、word は
+  `confidence` / `duration` / `eos` / `start` / `tags` / `text` / `type` を持ちます。
+- **word 単位のタイムコードを保持**: Apple Speech が `audioTimeRange` を付与した run
+  (日本語なら `今日` `とても` `です。` のような token) をそのまま使います。
+  `SpeechSegment` の start/end から文字数比で時刻を作り直すことはしません。
+  そのため Captioning や Text-Based Editing でも word 単位で扱えます。
+- **話者分離はしません**: EasySpeechAnalyzer は speaker diarization を行わないため、
+  常に単一話者として書き出します。話者 ID・表示名を変えたい場合は `speaker:` を指定します。
+
+  ```swift
+  try result.writePremiereProTranscriptJSON(
+      to: outputURL,
+      speaker: PremiereProSpeaker(id: UUID(), name: "話者 1")
+  )
+  ```
+
+- **language**: `Locale` を Adobe 仕様の言語コードへ変換します
+  (`ja_JP` → `ja-jp`、`en_US` → `en-us`、`zh_Hans_CN` → `cmn-hans`)。
+  仕様に無い言語は `??-??` になります。
+- **confidence**: `SpeechTranscriber` の `.transcriptionConfidence` 属性の実測値を使います。
+  Adobe 仕様では `confidence` は必須フィールドのため、属性が取得できなかった word には
+  フォールバック値 (既定 `1.0`) を書き出します。値は
+  `PremiereProTranscriptOptions(missingConfidenceFallback:)` で変更できます。
+- **eos**: `。` `．` `.` `!` `?` `！` `？` などの文末記号で終わる token を `true` にします
+  (閉じ括弧・閉じ引用符は無視して判定)。
+- **segments**: 既定では全 word を 1 セグメントにまとめます
+  (Premiere Pro の実 export でもセグメントは話者の切り替わりで分かれるため、単一話者なら 1 つが自然です)。
+  無音でセグメントを分けたい場合は
+  `PremiereProTranscriptOptions(segmentSilenceThreshold: 1.0)` を指定してください。
+  分割しても word の時刻は変わりません。字幕用の `SubtitleSegmentationOptions` とは無関係です。
+- **不正な値を出さない**: `NaN` / `infinity` の時刻を持つ word は除外し、
+  `start` と `duration` は必ず 0 以上、word は `start` の昇順で出力します。
+
+### 公開 API (Premiere Pro export)
+
+- `EasySpeechFileResult.words: [SpeechWord]`
+- `EasySpeechFileResult.makePremiereProTranscript(speaker:options:) throws -> PremiereProTranscript`
+- `EasySpeechFileResult.makePremiereProTranscriptJSON(speaker:options:prettyPrinted:) throws -> Data`
+- `EasySpeechFileResult.writePremiereProTranscriptJSON(to:speaker:options:prettyPrinted:) throws`
+- `SpeechTranscript` にも同じ 3 メソッド (`words` が空なら `PremiereProTranscriptError.noTimedWords`)
+- `SpeechWord` — `text` / `startTime` / `endTime` / `confidence?` / `duration`
+- `AttributedString.speechWords() -> [SpeechWord]`
+- `PremiereProTranscript` / `PremiereProTranscriptSegment` / `PremiereProTranscriptWord` /
+  `PremiereProSpeaker` / `PremiereProLanguageCode` / `PremiereProTranscriptOptions` /
+  `PremiereProTranscriptError`
 
 ## フォールバック: `EasySpeechRecognizerManager`
 

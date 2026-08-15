@@ -190,7 +190,8 @@ await manager.reset()
 ### Model types
 
 - `SpeechSegment` — `id` / `text` / `startTime` / `endTime` / `confidence?` / `isFinal` / `duration`
-- `SpeechTranscript` — `text` / `segments` / `locale` / `duration?` / `createdAt` (+ `finalizedSegments` `volatileSegments` `makeSubtitleSegments(options:)`)
+- `SpeechWord` — `text` / `startTime` / `endTime` / `confidence?` / `duration` (word-level timing)
+- `SpeechTranscript` — `text` / `segments` / `words` / `locale` / `duration?` / `createdAt` (+ `finalizedSegments` `volatileSegments` `makeSubtitleSegments(options:)`)
 - `SpeechAnalyzerState` — state enum for UI branching
 - `SpeechAnalyzerAvailability` — the reason when unavailable
 - `SubtitleSegment` — a subtitle clip
@@ -244,6 +245,92 @@ print(videoResult.plainText)
 - `static let printLogger: (String) -> Void`
 - `func analyzeAudioFile(at url: URL, progress: ((Double) -> Void)? = nil) async throws -> EasySpeechFileResult`
 - `func analyzeVideoFile(at url: URL, progress: ((Double) -> Void)? = nil) async throws -> EasySpeechFileResult`
+
+## Exporting a transcript JSON for Premiere Pro
+
+You can export the analysis result as a Transcript JSON that Adobe Premiere Pro can load via **Import Static Transcript**.
+
+```swift
+let analyzer = EasySpeechFileAnalyzer(locale: Locale(identifier: "ja_JP"))
+
+let result = try await analyzer.analyzeVideoFile(at: videoURL)
+
+try result.writePremiereProTranscriptJSON(to: outputURL)
+```
+
+If you want the raw `Data`:
+
+```swift
+let jsonData = try result.makePremiereProTranscriptJSON()
+try jsonData.write(to: outputURL)
+```
+
+It also works with microphone results from `EasySpeechAnalyzerManager`:
+
+```swift
+let transcript = await manager.stopAndMakeTranscript()
+try transcript.writePremiereProTranscriptJSON(to: outputURL)
+```
+
+### Importing in Premiere Pro
+
+```text
+Text panel
+ → Transcript tab
+ → … (menu)
+ → Import
+ → Import Static Transcript
+```
+
+### Format and behavior
+
+- **Official format**: Conforms to Adobe's published Premiere Pro Transcript JSON specification
+  (`PremierePro_transcript_format_spec.json`, JSON Schema draft-07).
+  The root has `language` / `segments` / `speakers`, and each word has
+  `confidence` / `duration` / `eos` / `start` / `tags` / `text` / `type`.
+- **Word-level timecodes are preserved**: The runs that Apple Speech tagged with `audioTimeRange`
+  (for Japanese, tokens such as `今日` `とても` `です。`) are used as-is.
+  Timings are never re-derived from `SpeechSegment` start/end by character ratio,
+  so Captioning and Text-Based Editing work at word granularity.
+- **No speaker diarization**: EasySpeechAnalyzer does not perform speaker diarization,
+  so the transcript is always written with a single speaker.
+  Pass `speaker:` to control the speaker id and display name.
+
+  ```swift
+  try result.writePremiereProTranscriptJSON(
+      to: outputURL,
+      speaker: PremiereProSpeaker(id: UUID(), name: "Speaker 1")
+  )
+  ```
+
+- **language**: The `Locale` is mapped to an Adobe language code
+  (`ja_JP` → `ja-jp`, `en_US` → `en-us`, `zh_Hans_CN` → `cmn-hans`).
+  Unsupported languages become `??-??`.
+- **confidence**: Real values from the `.transcriptionConfidence` attribute of `SpeechTranscriber` are used.
+  Because `confidence` is a required field in the Adobe spec, words without the attribute
+  fall back to a default value (`1.0`), configurable via
+  `PremiereProTranscriptOptions(missingConfidenceFallback:)`.
+- **eos**: `true` for tokens ending with sentence-ending punctuation such as
+  `。` `．` `.` `!` `?` `！` `？` (trailing closing brackets/quotes are ignored when checking).
+- **segments**: By default all words go into a single segment
+  (in real Premiere Pro exports, segments are split by speaker turns, so a single speaker means a single segment).
+  To split on silence, pass `PremiereProTranscriptOptions(segmentSilenceThreshold: 1.0)`;
+  word timings stay untouched either way. This is unrelated to `SubtitleSegmentationOptions`.
+- **No invalid values**: Words with `NaN` / `infinity` timings are dropped,
+  `start` and `duration` are always >= 0, and words are ordered by `start`.
+
+### Public API (Premiere Pro export)
+
+- `EasySpeechFileResult.words: [SpeechWord]`
+- `EasySpeechFileResult.makePremiereProTranscript(speaker:options:) throws -> PremiereProTranscript`
+- `EasySpeechFileResult.makePremiereProTranscriptJSON(speaker:options:prettyPrinted:) throws -> Data`
+- `EasySpeechFileResult.writePremiereProTranscriptJSON(to:speaker:options:prettyPrinted:) throws`
+- The same three methods on `SpeechTranscript` (throws `PremiereProTranscriptError.noTimedWords` when `words` is empty)
+- `SpeechWord` — `text` / `startTime` / `endTime` / `confidence?` / `duration`
+- `AttributedString.speechWords() -> [SpeechWord]`
+- `PremiereProTranscript` / `PremiereProTranscriptSegment` / `PremiereProTranscriptWord` /
+  `PremiereProSpeaker` / `PremiereProLanguageCode` / `PremiereProTranscriptOptions` /
+  `PremiereProTranscriptError`
 
 ## Fallback: `EasySpeechRecognizerManager`
 
