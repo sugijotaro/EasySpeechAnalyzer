@@ -378,6 +378,28 @@ final class PremiereProTranscriptCodableTests: XCTestCase {
         ]).speechWords()
     }
 
+    /// 既定の書き出しは Premiere Pro の実 export と同じく改行を含まない 1 行
+    func testDefaultOutputHasNoNewlines() throws {
+        let transcript = try makeTranscript(words: referenceWords)
+
+        let json = String(decoding: try transcript.jsonData(), as: UTF8.self)
+        XCTAssertFalse(json.contains("\n"))
+        XCTAssertFalse(json.contains("\r"))
+        // 空白も入らない (文字列リテラルの中を除く)。
+        XCTAssertFalse(json.contains("\" : \""))
+
+        let url = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("premiere-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: url) }
+        try transcript.write(to: url)
+        let written = try String(contentsOf: url, encoding: .utf8)
+        XCTAssert(written.filter { $0.isNewline }.isEmpty)
+
+        // 明示的に指定したときだけ整形する。
+        let pretty = String(decoding: try transcript.jsonData(prettyPrinted: true), as: UTF8.self)
+        XCTAssert(pretty.contains("\n"))
+    }
+
     /// encode → decode で内容が一致する
     func testRoundTrip() throws {
         let transcript = try makeTranscript(words: referenceWords)
@@ -399,6 +421,8 @@ final class PremiereProTranscriptCodableTests: XCTestCase {
             )
         )
         let fixtureData = try Data(contentsOf: url)
+        // fixture 自体も Premiere Pro の実 export と同じ 1 行の JSON。
+        XCTAssert(String(decoding: fixtureData, as: UTF8.self).filter { $0.isNewline }.isEmpty)
         let fixture = try JSONDecoder().decode(PremiereProTranscript.self, from: fixtureData)
 
         let generated = try makeTranscript(words: referenceWords)

@@ -316,6 +316,8 @@ Text panel
   (in real Premiere Pro exports, segments are split by speaker turns, so a single speaker means a single segment).
   To split on silence, pass `PremiereProTranscriptOptions(segmentSilenceThreshold: 1.0)`;
   word timings stay untouched either way. This is unrelated to `SubtitleSegmentationOptions`.
+- **Single-line output**: Like a real Premiere Pro export, the JSON is written as one line with no
+  newlines or whitespace. Pass `prettyPrinted: true` if you want it formatted for debugging.
 - **No invalid values**: Words with `NaN` / `infinity` timings are dropped,
   `start` and `duration` are always >= 0, and words are ordered by `start`.
 

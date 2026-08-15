@@ -206,8 +206,10 @@ extension PremiereProTranscriptWord {
 public extension PremiereProTranscript {
     /// Premiere Pro が読み込む JSON へエンコードする。
     ///
-    /// - Parameter prettyPrinted: 整形して出力するか (既定 `true`)。
-    func jsonData(prettyPrinted: Bool = true) throws -> Data {
+    /// 既定では Premiere Pro の実 export と同じく改行・空白を含まない 1 行の JSON を出力する。
+    ///
+    /// - Parameter prettyPrinted: 整形して出力するか (既定 `false`)。
+    func jsonData(prettyPrinted: Bool = false) throws -> Data {
         let encoder = JSONEncoder()
         if prettyPrinted {
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
@@ -218,7 +220,7 @@ public extension PremiereProTranscript {
     }
 
     /// Premiere Pro Transcript JSON をファイルへ書き出す。
-    func write(to url: URL, prettyPrinted: Bool = true) throws {
+    func write(to url: URL, prettyPrinted: Bool = false) throws {
         try jsonData(prettyPrinted: prettyPrinted).write(to: url, options: .atomic)
     }
 }
@@ -250,7 +252,7 @@ public extension EasySpeechFileResult {
     func makePremiereProTranscriptJSON(
         speaker: PremiereProSpeaker = .default,
         options: PremiereProTranscriptOptions = PremiereProTranscriptOptions(),
-        prettyPrinted: Bool = true
+        prettyPrinted: Bool = false
     ) throws -> Data {
         try makePremiereProTranscript(speaker: speaker, options: options)
             .jsonData(prettyPrinted: prettyPrinted)
@@ -261,7 +263,7 @@ public extension EasySpeechFileResult {
         to url: URL,
         speaker: PremiereProSpeaker = .default,
         options: PremiereProTranscriptOptions = PremiereProTranscriptOptions(),
-        prettyPrinted: Bool = true
+        prettyPrinted: Bool = false
     ) throws {
         try makePremiereProTranscript(speaker: speaker, options: options)
             .write(to: url, prettyPrinted: prettyPrinted)
@@ -292,7 +294,7 @@ public extension SpeechTranscript {
     func makePremiereProTranscriptJSON(
         speaker: PremiereProSpeaker = .default,
         options: PremiereProTranscriptOptions = PremiereProTranscriptOptions(),
-        prettyPrinted: Bool = true
+        prettyPrinted: Bool = false
     ) throws -> Data {
         try makePremiereProTranscript(speaker: speaker, options: options)
             .jsonData(prettyPrinted: prettyPrinted)
@@ -303,7 +305,7 @@ public extension SpeechTranscript {
         to url: URL,
         speaker: PremiereProSpeaker = .default,
         options: PremiereProTranscriptOptions = PremiereProTranscriptOptions(),
-        prettyPrinted: Bool = true
+        prettyPrinted: Bool = false
     ) throws {
         try makePremiereProTranscript(speaker: speaker, options: options)
             .write(to: url, prettyPrinted: prettyPrinted)

@@ -315,6 +315,8 @@ Text パネル
   無音でセグメントを分けたい場合は
   `PremiereProTranscriptOptions(segmentSilenceThreshold: 1.0)` を指定してください。
   分割しても word の時刻は変わりません。字幕用の `SubtitleSegmentationOptions` とは無関係です。
+- **出力は 1 行**: Premiere Pro の実 export と同じく、改行・空白を含まない 1 行の JSON を書き出します。
+  デバッグ等で整形したい場合は `prettyPrinted: true` を指定してください。
 - **不正な値を出さない**: `NaN` / `infinity` の時刻を持つ word は除外し、
   `start` と `duration` は必ず 0 以上、word は `start` の昇順で出力します。
 
