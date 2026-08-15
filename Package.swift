@@ -18,6 +18,13 @@ let package = Package(
         .target(
             name: "EasySpeechAnalyzer"
         ),
+        .testTarget(
+            name: "EasySpeechAnalyzerTests",
+            dependencies: ["EasySpeechAnalyzer"],
+            resources: [
+                .copy("Fixtures")
+            ]
+        ),
     ],
     swiftLanguageModes: [.v6]
 )
